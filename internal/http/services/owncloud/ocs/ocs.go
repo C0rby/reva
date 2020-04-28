@@ -86,10 +86,13 @@ func (s *svc) Handler() http.Handler {
 
 		log.Debug().Str("head", head).Str("tail", r.URL.Path).Msg("ocs routing")
 
-		// TODO v2 uses a status code mapper
-		// see https://github.com/owncloud/core/commit/bacf1603ffd53b7a5f73854d1d0ceb4ae545ce9f#diff-262cbf0df26b45bad0cf00d947345d9c
-		if head == "v1.php" || head == "v2.php" {
-			s.V1Handler.Handler().ServeHTTP(w, r)
+		if head == "v1.php" {
+			ctx := response.WithStatusCodeMapper(r.Context(), response.OcsV1StatusCodes)
+			s.V1Handler.Handler().ServeHTTP(w, r.WithContext(ctx))
+			return
+		} else if head == "v2.php" {
+			ctx := response.WithStatusCodeMapper(r.Context(), response.OcsV2StatusCodes)
+			s.V1Handler.Handler().ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 
