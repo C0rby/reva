@@ -34,6 +34,7 @@ import (
 	"github.com/cs3org/reva/pkg/appctx"
 	"github.com/cs3org/reva/pkg/rhttp"
 	"github.com/cs3org/reva/pkg/rhttp/router"
+	"github.com/cs3org/reva/pkg/utils"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 	"go.opencensus.io/trace"
@@ -235,7 +236,7 @@ func (s *svc) handleSpacesCopy(w http.ResponseWriter, r *http.Request, spaceID s
 		return
 	}
 
-	sublog := appctx.GetLogger(ctx).With().Str("spaceid", spaceID).Str("path", r.URL.Path).Logger()
+	sublog := appctx.GetLogger(ctx).With().Str("spaceid", spaceID).Str("path", r.URL.Path).Str("destination", dst).Logger()
 
 	// retrieve a specific storage space
 	srcRef, status, err := s.lookUpStorageSpaceReference(ctx, spaceID, r.URL.Path)
@@ -293,7 +294,6 @@ func (s *svc) handleSpacesCopy(w http.ResponseWriter, r *http.Request, spaceID s
 func (s *svc) executeSpacesCopy(ctx context.Context, client gateway.GatewayAPIClient, src *provider.ResourceInfo, dst *provider.Reference, recurse bool) error {
 	log := appctx.GetLogger(ctx)
 	log.Debug().Str("src", src.Path).Interface("dst", dst).Msg("descending")
-
 	if src.Type == provider.ResourceType_RESOURCE_TYPE_CONTAINER {
 		// create dir
 		createReq := &provider.CreateContainerRequest{
@@ -311,7 +311,8 @@ func (s *svc) executeSpacesCopy(ctx context.Context, client gateway.GatewayAPICl
 		}
 
 		// descend for children
-		listReq := &provider.ListContainerRequest{Ref: &provider.Reference{ResourceId: src.Id}}
+		// explicitly work with relative references
+		listReq := &provider.ListContainerRequest{Ref: &provider.Reference{ResourceId: src.Id, Path: "."}}
 		res, err := client.ListContainer(ctx, listReq)
 		if err != nil {
 			return err
@@ -321,10 +322,9 @@ func (s *svc) executeSpacesCopy(ctx context.Context, client gateway.GatewayAPICl
 		}
 
 		for i := range res.Infos {
-			childPath := strings.TrimPrefix(res.Infos[i].Path, src.Path)
 			childRef := &provider.Reference{
-				ResourceId: src.Id,
-				Path:       path.Join(dst.Path, childPath),
+				ResourceId: dst.ResourceId,
+				Path:       utils.MakeRelativePath(path.Join(dst.Path, res.Infos[i].Path)),
 			}
 			err := s.executeSpacesCopy(ctx, client, res.Infos[i], childRef, recurse)
 			if err != nil {
@@ -336,8 +336,8 @@ func (s *svc) executeSpacesCopy(ctx context.Context, client gateway.GatewayAPICl
 		// copy file
 
 		// 1. get download url
-
-		dReq := &provider.InitiateFileDownloadRequest{Ref: &provider.Reference{ResourceId: src.Id}}
+		// explicitly work with relative references so that we will use the spaces datatx
+		dReq := &provider.InitiateFileDownloadRequest{Ref: &provider.Reference{ResourceId: src.Id, Path: "."}}
 
 		dRes, err := client.InitiateFileDownload(ctx, dReq)
 		if err != nil {
@@ -354,7 +354,6 @@ func (s *svc) executeSpacesCopy(ctx context.Context, client gateway.GatewayAPICl
 				downloadEP, downloadToken = p.DownloadEndpoint, p.Token
 			}
 		}
-
 		// 2. get upload url
 
 		uReq := &provider.InitiateFileUploadRequest{
@@ -392,7 +391,9 @@ func (s *svc) executeSpacesCopy(ctx context.Context, client gateway.GatewayAPICl
 		if err != nil {
 			return err
 		}
-		httpDownloadReq.Header.Set(datagateway.TokenTransportHeader, downloadToken)
+		if downloadToken != "" {
+			httpDownloadReq.Header.Set(datagateway.TokenTransportHeader, downloadToken)
+		}
 
 		httpDownloadRes, err := s.client.Do(httpDownloadReq)
 		if err != nil {
